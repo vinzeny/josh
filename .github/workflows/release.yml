@@ -48,7 +48,7 @@ jobs:
             release/make/zip/darwin/${{ matrix.arch }}/*.zip
 
   publish:
-    name: Publish draft release
+    name: Publish release
     runs-on: ubuntu-latest
     needs: build-macos
     permissions:
@@ -63,7 +63,7 @@ jobs:
         with:
           path: release-artifacts
 
-      - name: Create or update draft release
+      - name: Create or publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -78,3 +78,5 @@ jobs:
 
           find release-artifacts -type f \( -name '*.dmg' -o -name '*.zip' \) -print0 |
             xargs -0 gh release upload "$tag" --repo "$GH_REPO" --clobber
+
+          gh release edit "$tag" --repo "$GH_REPO" --draft=false --prerelease=false --title "$tag"

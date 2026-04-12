@@ -21,6 +21,23 @@ function installMockApi(page, options = {}) {
         }
       ]
     };
+    const updateStore = {
+      supported: true,
+      enabled: false,
+      canCheck: false,
+      checking: false,
+      available: false,
+      downloaded: false,
+      currentVersion: "0.1.4",
+      repo: "vinzeny/josh",
+      status: "development",
+      releaseName: "",
+      releaseDate: "",
+      releaseNotes: "",
+      updateUrl: "",
+      lastCheckedAt: "",
+      error: ""
+    };
 
     window.claudeSettings = {
       read: async () => ({
@@ -50,6 +67,12 @@ function installMockApi(page, options = {}) {
         store.presets = store.presets.filter((item) => item.name !== presetName);
         return { presets: store.presets };
       }
+    };
+
+    window.joshUpdates = {
+      read: async () => updateStore,
+      check: async () => updateStore,
+      onDidChange: () => () => {}
     };
   }, options);
 }
@@ -122,6 +145,9 @@ test("can open settings and show file paths", async ({ page }) => {
   await page.getByRole("button", { name: "设置" }).click();
 
   const dialog = page.getByRole("dialog", { name: "文件位置" });
+  await expect(dialog.getByText("0.1.4")).toBeVisible();
+  await expect(dialog.getByText("vinzeny/josh")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "检查新版本" })).toBeDisabled();
   await expect(dialog.getByText("/Users/test/.josh/presets.json")).toBeVisible();
   await expect(dialog.getByText("/Users/test/.josh/backups")).toBeVisible();
   await expect(dialog.getByText("/Users/test/.claude/settings.json")).toBeVisible();
@@ -148,4 +174,72 @@ test("can switch interface language from settings", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Settings" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add" })).toBeVisible();
   await expect(page.getByText("claude code model switch")).toBeVisible();
+});
+
+test("settings shows update action when a downloaded release is ready", async ({ page }) => {
+  await page.goto("about:blank");
+  await page.addInitScript(() => {
+    const store = {
+      installed: true,
+      settingsPath: "/Users/test/.claude/settings.json",
+      appStorageDir: "/Users/test/.josh",
+      presetStorePath: "/Users/test/.josh/presets.json",
+      backupDir: "/Users/test/.josh/backups",
+      parsed: {
+        env: {},
+        permissions: {
+          allow: ["mcp__pencil"]
+        }
+      },
+      presets: [
+        {
+          name: "Official",
+          content: {}
+        }
+      ]
+    };
+
+    window.claudeSettings = {
+      read: async () => store,
+      createPreset: async () => ({ presets: store.presets }),
+      listPresets: async () => ({ presets: store.presets }),
+      activate: async () => ({ saved: store.parsed }),
+      deletePreset: async () => ({ presets: store.presets }),
+      onDidChange: () => () => {}
+    };
+
+    window.__installClicked = false;
+    window.joshUpdates = {
+      read: async () => ({
+        supported: true,
+        enabled: true,
+        canCheck: true,
+        checking: false,
+        available: true,
+        downloaded: true,
+        currentVersion: "0.1.4",
+        repo: "vinzeny/josh",
+        status: "downloaded",
+        releaseName: "v0.2.0",
+        releaseDate: "",
+        releaseNotes: "",
+        updateUrl: "",
+        lastCheckedAt: "",
+        error: ""
+      }),
+      check: async () => ({}),
+      install: async () => {
+        window.__installClicked = true;
+        return {};
+      },
+      onDidChange: () => () => {}
+    };
+  });
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "文件位置" });
+  await expect(dialog.getByRole("button", { name: "立即更新" })).toBeVisible();
+  await dialog.getByRole("button", { name: "立即更新" }).click();
+  await expect.poll(() => page.evaluate(() => window.__installClicked)).toBe(true);
 });

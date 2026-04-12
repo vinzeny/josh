@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Eye, EyeOff, PencilLine, Play, Plus, Settings2 } from "lucide-react";
 
 import MarketingSite from "@/MarketingSite";
@@ -49,6 +49,23 @@ const ENV_TEMPLATE = {
   ANTHROPIC_BASE_URL: "",
   ANTHROPIC_MODEL: ""
 };
+const DEFAULT_UPDATE_STATE = Object.freeze({
+  supported: true,
+  enabled: false,
+  canCheck: false,
+  checking: false,
+  available: false,
+  downloaded: false,
+  currentVersion: "",
+  repo: "",
+  status: "idle",
+  releaseName: "",
+  releaseDate: "",
+  releaseNotes: "",
+  updateUrl: "",
+  lastCheckedAt: "",
+  error: ""
+});
 
 const MESSAGES = {
   zh: {
@@ -92,6 +109,21 @@ const MESSAGES = {
     saving: "处理中...",
     settingsTitle: "文件位置",
     settingsDescription: "所有配置都保存在 JOSH 自己的目录里。",
+    updateTitle: "版本更新",
+    updateVersion: "当前版本",
+    updateSource: "GitHub Release",
+    updateCheck: "检查新版本",
+    updateChecking: "检查中...",
+    updateInstall: "立即更新",
+    updateEnabled: "JOSH 会在启动时检查 GitHub Release，有新版本时会提示你更新。",
+    updateCurrent: "当前已经是最新版本。",
+    updateAvailable: "发现新版本，正在后台下载，下载完成后会提示你更新。",
+    updateDownloaded: (name) =>
+      name ? `${name} 已准备好，点“立即更新”后重启即可完成安装。` : "新版本已准备好，点“立即更新”后重启即可完成安装。",
+    updateDevelopment: "开发模式下不可用。请安装发布版再测试自动更新。",
+    updateUnsupported: "当前平台不支持自动更新。",
+    updateError: (message) => `更新检查失败：${message}`,
+    updateHint: "只会识别已发布的 GitHub Release；draft 和 pre-release 不会被推送给用户。",
     language: "界面语言",
     chinese: "中文",
     english: "English",
@@ -156,6 +188,24 @@ const MESSAGES = {
     saving: "Working...",
     settingsTitle: "File Locations",
     settingsDescription: "All presets are stored inside JOSH's own folder.",
+    updateTitle: "Release Updates",
+    updateVersion: "Current Version",
+    updateSource: "GitHub Release",
+    updateCheck: "Check for updates",
+    updateChecking: "Checking...",
+    updateInstall: "Update now",
+    updateEnabled: "JOSH checks GitHub Releases on launch and prompts you when a new version is ready.",
+    updateCurrent: "You're already on the latest version.",
+    updateAvailable: "Update found. Downloading it in the background, and you'll be prompted when it's ready.",
+    updateDownloaded: (name) =>
+      name
+        ? `${name} is ready. Click Update now to restart and finish installing it.`
+        : "A new version is ready. Click Update now to restart and finish installing it.",
+    updateDevelopment: "Unavailable in development mode. Install a release build to test auto updates.",
+    updateUnsupported: "Auto update is not supported on this platform.",
+    updateError: (message) => `Update check failed: ${message}`,
+    updateHint:
+      "Only published GitHub Releases are picked up; draft and pre-release builds are ignored.",
     language: "Language",
     chinese: "中文",
     english: "English",
@@ -220,6 +270,39 @@ function readableError(error) {
   return error?.message ?? "发生了未知错误。";
 }
 
+function makeDefaultUpdateState() {
+  return { ...DEFAULT_UPDATE_STATE };
+}
+
+function normalizeUpdateState(nextState) {
+  return {
+    ...makeDefaultUpdateState(),
+    ...(nextState ?? {})
+  };
+}
+
+function formatUpdateStatus(copy, updateState) {
+  switch (updateState.status) {
+    case "development":
+      return copy.updateDevelopment;
+    case "unsupported":
+      return copy.updateUnsupported;
+    case "checking":
+      return copy.updateChecking;
+    case "available":
+      return copy.updateAvailable;
+    case "downloaded":
+      return copy.updateDownloaded(updateState.releaseName);
+    case "up-to-date":
+      return copy.updateCurrent;
+    case "error":
+      return copy.updateError(updateState.error || "Unknown error");
+    case "idle":
+    default:
+      return copy.updateEnabled;
+  }
+}
+
 function DesktopApp() {
   const [locale, setLocale] = useState(getInitialLocale);
   const [settingsPath, setSettingsPath] = useState("");
@@ -228,6 +311,7 @@ function DesktopApp() {
   const [backupDir, setBackupDir] = useState("");
   const [currentSettings, setCurrentSettings] = useState(null);
   const [presets, setPresets] = useState([]);
+  const [updateInfo, setUpdateInfo] = useState(makeDefaultUpdateState);
   const [claudeInstalled, setClaudeInstalled] = useState(true);
   const [draftName, setDraftName] = useState("");
   const [draftContent, setDraftContent] = useState(stringify(ENV_TEMPLATE));
@@ -253,6 +337,11 @@ function DesktopApp() {
     const model = currentEnv(currentSettings).ANTHROPIC_MODEL?.trim();
     return model || copy.notSet;
   }, [claudeInstalled, copy.claudeMissingShort, copy.notSet, currentSettings]);
+
+  const updateStatusText = useMemo(
+    () => formatUpdateStatus(copy, updateInfo),
+    [copy, updateInfo]
+  );
 
   const draftState = useMemo(() => {
     try {
@@ -320,10 +409,15 @@ function DesktopApp() {
     setDraftName(suggestedDraftName);
   }, [draftName, editorOpen, editingPreset, nameTouched, suggestedDraftName]);
 
-  async function loadAll(message = copy.status.loaded) {
+  const loadAll = useCallback(async (message = copy.status.loaded) => {
     try {
       setBusy(true);
-      const data = await window.claudeSettings.read();
+      const [data, updates] = await Promise.all([
+        window.claudeSettings.read(),
+        window.joshUpdates?.read
+          ? window.joshUpdates.read().catch(() => makeDefaultUpdateState())
+          : Promise.resolve(makeDefaultUpdateState())
+      ]);
       const installed = data.installed !== false;
       setSettingsPath(data.settingsPath);
       setAppStorageDir(data.appStorageDir);
@@ -332,17 +426,76 @@ function DesktopApp() {
       setClaudeInstalled(installed);
       setCurrentSettings(data.parsed ?? { env: {} });
       setPresets(data.presets);
+      setUpdateInfo(normalizeUpdateState(updates));
       setStatus(installed ? message : copy.status.claudeMissing);
     } catch (error) {
       setStatus(readableError(error));
     } finally {
       setBusy(false);
     }
-  }
+  }, [copy.status.claudeMissing, copy.status.loaded]);
 
   useEffect(() => {
     loadAll();
-  }, []);
+  }, [loadAll]);
+
+  useEffect(() => {
+    const unsubscribeSettings = window.claudeSettings.onDidChange?.(() => {
+      loadAll();
+    });
+    const unsubscribeUpdates = window.joshUpdates?.onDidChange?.((nextState) => {
+      setUpdateInfo(normalizeUpdateState(nextState));
+    });
+
+    const handleFocus = () => {
+      loadAll();
+    };
+
+    window.addEventListener("focus", handleFocus);
+
+    return () => {
+      unsubscribeSettings?.();
+      unsubscribeUpdates?.();
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, [loadAll]);
+
+  async function checkForUpdates() {
+    if (!window.joshUpdates?.check) {
+      return;
+    }
+
+    try {
+      const nextState = await window.joshUpdates.check();
+      setUpdateInfo(normalizeUpdateState(nextState));
+    } catch (error) {
+      setUpdateInfo((current) =>
+        normalizeUpdateState({
+          ...current,
+          status: "error",
+          error: readableError(error)
+        })
+      );
+    }
+  }
+
+  async function installUpdate() {
+    if (!window.joshUpdates?.install || !updateInfo.downloaded) {
+      return;
+    }
+
+    try {
+      await window.joshUpdates.install();
+    } catch (error) {
+      setUpdateInfo((current) =>
+        normalizeUpdateState({
+          ...current,
+          status: "error",
+          error: readableError(error)
+        })
+      );
+    }
+  }
 
   async function refreshPresets() {
     const refreshed = await window.claudeSettings.listPresets();
@@ -807,6 +960,48 @@ function DesktopApp() {
 
           <div className="flex-1 overflow-y-auto px-5 py-4">
             <div className="space-y-3">
+              <div className="rounded-lg border border-border/70 bg-muted/35 px-3 py-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+                      {copy.updateTitle}
+                    </p>
+                    <p className="mt-1 text-sm leading-6">{updateStatusText}</p>
+                  </div>
+                  {updateInfo.downloaded ? (
+                    <Button onClick={installUpdate} size="sm" type="button">
+                      {copy.updateInstall}
+                    </Button>
+                  ) : (
+                    <Button
+                      disabled={!updateInfo.canCheck || updateInfo.status === "checking"}
+                      onClick={checkForUpdates}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      {updateInfo.status === "checking" ? copy.updateChecking : copy.updateCheck}
+                    </Button>
+                  )}
+                </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+                      {copy.updateVersion}
+                    </p>
+                    <p className="mt-1 text-sm leading-6">
+                      {updateInfo.currentVersion || "0.0.0"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+                      {copy.updateSource}
+                    </p>
+                    <p className="mt-1 break-all text-sm leading-6">{updateInfo.repo || "-"}</p>
+                  </div>
+                </div>
+                <p className="mt-3 text-xs leading-5 text-muted-foreground">{copy.updateHint}</p>
+              </div>
               <div className="rounded-lg border border-border/70 bg-muted/35 px-3 py-3">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
                   {copy.language}

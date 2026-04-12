@@ -152,3 +152,105 @@ test("legacy preset files are ignored when the JOSH store is missing", async () 
     await electronApp.close();
   }
 });
+
+test("desktop bridge exposes auto-update state", async () => {
+  const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "josh-update-"));
+  const claudeDir = path.join(fakeHome, ".claude");
+  await fs.mkdir(claudeDir, { recursive: true });
+
+  await fs.writeFile(
+    path.join(claudeDir, "settings.json"),
+    JSON.stringify(
+      {
+        env: {},
+        permissions: {
+          allow: ["mcp__pencil"]
+        }
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  const electronApp = await electron.launch({
+    executablePath: electronBinary,
+    args: [path.join(process.cwd(), ".")],
+    env: {
+      ...process.env,
+      HOME: fakeHome,
+      ELECTRON_RENDERER_URL: "http://127.0.0.1:4173"
+    }
+  });
+
+  try {
+    const window = await electronApp.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+
+    const updates = await window.evaluate(() => window.joshUpdates.read());
+
+    expect(updates.currentVersion).toBe("0.1.4");
+    expect(updates.repo).toBe("vinzeny/josh");
+    expect(updates.status).toBe("development");
+    expect(updates.canCheck).toBe(false);
+  } finally {
+    await electronApp.close();
+  }
+});
+
+test("closing the window keeps the app alive for menu bar quick switching", async () => {
+  const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "josh-tray-"));
+  const claudeDir = path.join(fakeHome, ".claude");
+  await fs.mkdir(claudeDir, { recursive: true });
+
+  await fs.writeFile(
+    path.join(claudeDir, "settings.json"),
+    JSON.stringify(
+      {
+        env: {},
+        permissions: {
+          allow: ["mcp__pencil"]
+        }
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  const electronApp = await electron.launch({
+    executablePath: electronBinary,
+    args: [path.join(process.cwd(), ".")],
+    env: {
+      ...process.env,
+      HOME: fakeHome,
+      ELECTRON_RENDERER_URL: "http://127.0.0.1:4173"
+    }
+  });
+
+  try {
+    const window = await electronApp.firstWindow();
+    await window.waitForLoadState("domcontentloaded");
+
+    const state = await electronApp.evaluate(({ BrowserWindow }) => {
+      const currentWindow = BrowserWindow.getAllWindows()[0];
+      currentWindow.close();
+
+      return {
+        trayReady: globalThis.__JOSH_TRAY_READY__ === true,
+        trayTitle: globalThis.__JOSH_TRAY_TITLE__ ?? "",
+        visible: currentWindow.isVisible(),
+        windowCount: BrowserWindow.getAllWindows().length
+      };
+    });
+
+    expect(state).toEqual({
+      trayReady: true,
+      trayTitle: "",
+      visible: false,
+      windowCount: 1
+    });
+  } finally {
+    await electronApp.close();
+  }
+});
