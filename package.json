@@ -10,7 +10,10 @@
     "build": "vite build",
     "start": "electron .",
     "package": "npm run build && electron-forge package",
-    "make": "npm run build && electron-forge make",
+    "make": "npm run build && npm run make:mac:all",
+    "make:mac:arm64": "electron-forge make --platform=darwin --arch=arm64",
+    "make:mac:x64": "electron-forge make --platform=darwin --arch=x64",
+    "make:mac:all": "npm run make:mac:arm64 && npm run make:mac:x64",
     "publish": "npm run build && electron-forge publish",
     "preview:test": "vite preview --host 127.0.0.1 --port 4173",
     "test:e2e": "npm run build && playwright test"

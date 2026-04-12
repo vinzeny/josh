@@ -4,11 +4,13 @@
 
 JOSH is a small desktop switcher for Claude Code model presets. It manages reusable `env` presets and writes only the `env` object in `~/.claude/settings.json`.
 
-![JOSH screenshot](./josh-ui.png)
+![JOSH logo](./src/josh-logo.png)
 
 ## Download
 
-- Download the latest macOS build from the Releases page
+- Download the matching macOS build from the Releases page:
+  - `arm64` for Apple Silicon Macs
+  - `x64` for Intel Macs
 - Open JOSH and choose a preset
 - If JOSH says Claude Code is not installed, install Claude Code and launch it once first
 
@@ -37,8 +39,8 @@ JOSH automatically normalizes old built-in names such as `official json` into `O
 
 ## Release
 
-- Electron Forge is configured for macOS `zip` and `dmg`
-- Run `npm run make` to generate local artifacts in `release/make`
+- Electron Forge is configured for macOS `arm64` and `x64`, each with `zip` and `dmg`
+- Run `npm run make` to generate both Apple Silicon and Intel artifacts in `release/make`
 - Push a tag like `v0.1.0` to trigger GitHub Actions publishing
-- The workflow uploads artifacts to a draft GitHub Release
+- The workflow builds `arm64` on Apple Silicon runners and `x64` on Intel runners, then uploads both to one draft GitHub Release
 - Builds are unsigned by default, so macOS may ask users to open the app manually

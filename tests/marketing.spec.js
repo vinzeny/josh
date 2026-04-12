@@ -9,7 +9,11 @@ test("renders the marketing homepage without the desktop bridge", async ({ page 
     })
   ).toBeVisible();
   await expect(page.getByRole("img", { name: "JOSH logo" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Download macOS App|下载 macOS App/ }).first()).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Download DMG|下载 DMG/ }).first()
+  ).toBeVisible();
+  await expect(page.getByText(/^Apple Silicon$|^Apple 芯片$/)).toBeVisible();
+  await expect(page.getByText(/^Intel Mac$|^Intel 芯片$/)).toBeVisible();
   await expect(
     page.getByText(
       /The newest release will appear here after publishing\.|发布后这里会自动读取最新版本。/

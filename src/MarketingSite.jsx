@@ -4,7 +4,6 @@ import { Download, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 import joshLogo from "./josh-logo.png";
-import appScreenshot from "../josh-ui.png";
 
 const LOCALE_STORAGE_KEY = "swtch-locale";
 
@@ -18,9 +17,15 @@ const COPY = {
     headline: "切换 Claude Code 模型预设，不动其余 settings.json。",
     body: "保存常用 env 方案，一键切换，随时回到 Official。",
     downloadMac: "下载 macOS App",
+    downloadDmg: "下载 DMG",
     downloadZip: "下载 ZIP",
     openReleases: "查看 Releases",
+    appleSilicon: "Apple 芯片",
+    intelMac: "Intel 芯片",
+    currentModel: "当前模型",
     screenshotLabel: "桌面切换器",
+    previewAction: "启动",
+    previewCurrent: "当前",
     featureOneTitle: "只改 env",
     featureOneBody: "保留 settings.json 里的其他配置，只替换 env 对象。",
     featureTwoTitle: "回到 Official",
@@ -28,7 +33,7 @@ const COPY = {
     featureThreeTitle: "中英文界面",
     featureThreeBody: "同一套预设，桌面工具和官网入口都能快速理解。",
     ctaTitle: "下载后即可本地切换模型预设。",
-    ctaBody: "优先打开最新 Release；有 DMG 和 ZIP 两个入口。",
+    ctaBody: "官网直接区分 Apple 芯片和 Intel，两套安装包分别下载。",
     languageZh: "中文",
     languageEn: "English",
     versionFallback: "Latest"
@@ -42,9 +47,15 @@ const COPY = {
     headline: "Switch Claude Code model presets without touching the rest of settings.json.",
     body: "Save reusable env setups, switch in one click, and jump back to Official any time.",
     downloadMac: "Download macOS App",
+    downloadDmg: "Download DMG",
     downloadZip: "Download ZIP",
     openReleases: "Open Releases",
+    appleSilicon: "Apple Silicon",
+    intelMac: "Intel Mac",
+    currentModel: "Current Model",
     screenshotLabel: "Desktop switcher",
+    previewAction: "Launch",
+    previewCurrent: "Current",
     featureOneTitle: "Only env changes",
     featureOneBody: "Everything outside env stays in place, including the rest of settings.json.",
     featureTwoTitle: "Official stays ready",
@@ -52,7 +63,7 @@ const COPY = {
     featureThreeTitle: "Bilingual flow",
     featureThreeBody: "The same presets stay easy to use in both English and Chinese.",
     ctaTitle: "Download once and switch model presets locally.",
-    ctaBody: "The fastest path goes straight to the newest Release, with both DMG and ZIP.",
+    ctaBody: "Download pages now split Apple Silicon and Intel builds so the right installer is obvious.",
     languageZh: "中文",
     languageEn: "English",
     versionFallback: "Latest"
@@ -106,15 +117,22 @@ function releaseStateFromRepo(repo) {
   return {
     repo,
     releaseUrl,
-    dmgUrl: "",
-    zipUrl: "",
+    arm64DmgUrl: "",
+    x64DmgUrl: "",
+    arm64ZipUrl: "",
+    x64ZipUrl: "",
     version: "",
     connected: false
   };
 }
 
-function findAssetUrl(assets, extension) {
-  return assets.find((asset) => asset.name.toLowerCase().endsWith(extension))?.browser_download_url || "";
+function findAssetUrl(assets, arch, extension) {
+  return (
+    assets.find((asset) => {
+      const name = asset.name.toLowerCase();
+      return name.includes(arch) && name.endsWith(extension);
+    })?.browser_download_url || ""
+  );
 }
 
 function DownloadButton({ href, icon: Icon, label, variant = "default" }) {
@@ -134,6 +152,100 @@ function DownloadButton({ href, icon: Icon, label, variant = "default" }) {
         {label}
       </a>
     </Button>
+  );
+}
+
+function DownloadGroup({ copy, dmgUrl, title, zipUrl }) {
+  return (
+    <div className="w-full rounded-lg border border-slate-200 bg-white px-4 py-4 text-left shadow-[0_12px_40px_rgba(15,23,42,0.05)]">
+      <p className="text-sm font-semibold tracking-tight text-slate-950">{title}</p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <DownloadButton href={dmgUrl} icon={Download} label={copy.downloadDmg} />
+        <DownloadButton href={zipUrl} icon={Download} label={copy.downloadZip} variant="outline" />
+      </div>
+    </div>
+  );
+}
+
+const DEMO_PRESETS = [
+  { name: "Official", tag: "Built-in", active: false },
+  { name: "Demo Team", tag: "Active", active: true },
+  { name: "Research", tag: "", active: false },
+  { name: "Local Sandbox", tag: "", active: false }
+];
+
+function ProductPreview({ copy, versionLabel }) {
+  return (
+    <div className="mt-10 overflow-hidden rounded-lg border border-slate-200 bg-slate-950 shadow-[0_30px_100px_rgba(15,23,42,0.12)]">
+      <div className="flex items-center justify-between border-b border-white/8 px-4 py-3 text-xs uppercase tracking-[0.32em] text-white/55">
+        <span>{copy.screenshotLabel}</span>
+        <span>{versionLabel}</span>
+      </div>
+
+      <div className="space-y-6 px-5 py-5 text-white">
+        <div className="flex items-start justify-between gap-6">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.35em] text-white/45">
+              JOSH
+            </p>
+            <p className="mt-3 text-3xl font-semibold tracking-tight text-white/96">4 Presets</p>
+            <p className="mt-2 text-base text-white/58">Configuration loaded.</p>
+          </div>
+
+          <div className="min-w-[250px] rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-right">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-white/45">
+              {copy.currentModel}
+            </p>
+            <div className="mt-3 flex items-center justify-end gap-3">
+              <span className="text-xl font-semibold tracking-tight text-white/82">demo-model</span>
+              <span className="rounded-full bg-emerald-500/16 px-3 py-1 text-sm font-medium text-emerald-300">
+                Demo Team
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          {DEMO_PRESETS.map((preset) => (
+            <div
+              key={preset.name}
+              className={`flex items-center justify-between rounded-xl border px-4 py-4 ${
+                preset.active
+                  ? "border-emerald-400/40 bg-emerald-400/[0.08]"
+                  : "border-white/8 bg-white/[0.03]"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <span className="text-lg font-semibold tracking-tight text-white/92">
+                  {preset.name}
+                </span>
+                {preset.tag ? (
+                  <span
+                    className={`rounded-full px-3 py-1 text-sm font-medium ${
+                      preset.active
+                        ? "bg-emerald-400/18 text-emerald-300"
+                        : "bg-white/7 text-white/62"
+                    }`}
+                  >
+                    {preset.tag}
+                  </span>
+                ) : null}
+              </div>
+
+              <span
+                className={`rounded-lg px-3 py-2 text-sm font-medium ${
+                  preset.active
+                    ? "bg-emerald-400/18 text-emerald-300"
+                    : "bg-white/7 text-white/70"
+                }`}
+              >
+                {preset.active ? copy.previewCurrent : copy.previewAction}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -174,8 +286,10 @@ export default function MarketingSite() {
         setRelease({
           repo,
           releaseUrl: data.html_url || initial.releaseUrl,
-          dmgUrl: findAssetUrl(data.assets || [], ".dmg"),
-          zipUrl: findAssetUrl(data.assets || [], ".zip"),
+          arm64DmgUrl: findAssetUrl(data.assets || [], "arm64", ".dmg"),
+          x64DmgUrl: findAssetUrl(data.assets || [], "x64", ".dmg"),
+          arm64ZipUrl: findAssetUrl(data.assets || [], "arm64", ".zip"),
+          x64ZipUrl: findAssetUrl(data.assets || [], "x64", ".zip"),
           version: data.tag_name || "",
           connected: true
         });
@@ -249,18 +363,22 @@ export default function MarketingSite() {
                 {copy.body}
               </p>
 
-              <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-                <DownloadButton
-                  href={release.dmgUrl || release.releaseUrl}
-                  icon={Download}
-                  label={copy.downloadMac}
+              <div className="mt-6 grid w-full max-w-3xl gap-3 sm:grid-cols-2">
+                <DownloadGroup
+                  copy={copy}
+                  dmgUrl={release.arm64DmgUrl || release.releaseUrl}
+                  title={copy.appleSilicon}
+                  zipUrl={release.arm64ZipUrl || release.releaseUrl}
                 />
-                <DownloadButton
-                  href={release.zipUrl || release.releaseUrl}
-                  icon={Download}
-                  label={copy.downloadZip}
-                  variant="outline"
+                <DownloadGroup
+                  copy={copy}
+                  dmgUrl={release.x64DmgUrl || release.releaseUrl}
+                  title={copy.intelMac}
+                  zipUrl={release.x64ZipUrl || release.releaseUrl}
                 />
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
                 <DownloadButton
                   href={release.releaseUrl}
                   icon={ExternalLink}
@@ -277,17 +395,7 @@ export default function MarketingSite() {
               </div>
             </div>
 
-            <div className="mt-10 overflow-hidden rounded-lg border border-slate-200 bg-slate-950 shadow-[0_30px_100px_rgba(15,23,42,0.12)]">
-              <div className="flex items-center justify-between border-b border-white/8 px-4 py-3 text-xs uppercase tracking-[0.32em] text-white/55">
-                <span>{copy.screenshotLabel}</span>
-                <span>{versionLabel}</span>
-              </div>
-              <img
-                alt="JOSH desktop app"
-                className="block w-full"
-                src={appScreenshot}
-              />
-            </div>
+            <ProductPreview copy={copy} versionLabel={versionLabel} />
           </section>
 
           <section className="grid gap-8 border-b border-slate-200/80 py-10 md:grid-cols-3">
@@ -322,9 +430,15 @@ export default function MarketingSite() {
 
               <div className="flex flex-wrap gap-3">
                 <DownloadButton
-                  href={release.dmgUrl || release.releaseUrl}
+                  href={release.arm64DmgUrl || release.releaseUrl}
                   icon={Download}
-                  label={copy.downloadMac}
+                  label={`${copy.appleSilicon} DMG`}
+                />
+                <DownloadButton
+                  href={release.x64DmgUrl || release.releaseUrl}
+                  icon={Download}
+                  label={`${copy.intelMac} DMG`}
+                  variant="outline"
                 />
                 <DownloadButton
                   href={release.releaseUrl}

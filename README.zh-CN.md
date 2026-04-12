@@ -4,11 +4,13 @@
 
 JOSH 是一个给 Claude Code 用的小型桌面切换器，用来管理模型预设，并且只改写 `~/.claude/settings.json` 里的 `env` 对象。
 
-![JOSH 截图](./josh-ui.png)
+![JOSH 标志](./src/josh-logo.png)
 
 ## 下载方式
 
-- 从 Releases 页面下载最新的 macOS 安装包
+- 从 Releases 页面下载对应芯片的 macOS 安装包：
+  - `arm64` 对应 Apple 芯片 Mac
+  - `x64` 对应 Intel Mac
 - 打开 JOSH，选择想要启用的预设
 - 如果界面提示没有安装 Claude Code，请先安装并启动一次 Claude Code
 
@@ -37,8 +39,8 @@ JOSH 会自动把旧的内置名字，比如 `official json`，归一成 `Offici
 
 ## 发布
 
-- 现在已经接入 Electron Forge，生成 macOS 的 `zip` 和 `dmg`
-- 本地执行 `npm run make`，产物会出现在 `release/make`
+- 现在已经接入 Electron Forge，会分别生成 macOS `arm64` 和 `x64` 两套 `zip` / `dmg`
+- 本地执行 `npm run make`，会同时产出 Apple 芯片版和 Intel 版，文件都在 `release/make`
 - 推送像 `v0.1.0` 这样的 tag，就会触发 GitHub Actions 发布
-- 工作流会把产物上传到 GitHub Draft Release
+- 工作流会分别在 Apple Silicon 和 Intel macOS runner 上构建，再统一上传到同一个 GitHub Draft Release
 - 现在默认还是未签名包，macOS 可能会提示手动放行一次

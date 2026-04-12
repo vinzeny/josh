@@ -1,3 +1,5 @@
+const path = require("path");
+
 function resolveGitHubRepository() {
   const fullRepository =
     process.env.GITHUB_REPOSITORY || process.env.JOSH_GITHUB_REPOSITORY;
@@ -21,6 +23,8 @@ function resolveGitHubRepository() {
 }
 
 const repository = resolveGitHubRepository();
+const appIconPath = path.join(__dirname, "src", "assets", "icon");
+const dmgIconPath = path.join(__dirname, "src", "assets", "icon.icns");
 
 module.exports = {
   outDir: "release",
@@ -29,6 +33,7 @@ module.exports = {
     appBundleId: "com.josh.app",
     appCategoryType: "public.app-category.developer-tools",
     executableName: "JOSH",
+    icon: appIconPath,
     ignore: [
       /^\/\.git($|\/)/,
       /^\/release($|\/)/,
@@ -49,7 +54,8 @@ module.exports = {
       name: "@electron-forge/maker-dmg",
       platforms: ["darwin"],
       config: {
-        format: "ULFO"
+        format: "ULFO",
+        icon: dmgIconPath
       }
     }
   ],
