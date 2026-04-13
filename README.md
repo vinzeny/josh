@@ -4,7 +4,7 @@
 
 JOSH is a small desktop switcher for Claude Code model presets. It manages reusable `env` presets and writes only the `env` object in `~/.claude/settings.json`.
 
-![JOSH logo](./src/josh-logo.png)
+![JOSH logo](./src/assets/product-image.png)
 
 ## Download
 
