@@ -4,7 +4,7 @@
 
 JOSH 是一个给 Claude Code 用的小型桌面切换器，用来管理模型预设，并且只改写 `~/.claude/settings.json` 里的 `env` 对象。
 
-![JOSH 标志](./src/josh-logo.png)
+![JOSH 标志](./src/assets/product-image.png)
 
 ## 下载方式
 
