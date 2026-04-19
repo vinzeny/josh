@@ -101,6 +101,19 @@ function stableStringify(value) {
   return JSON.stringify(value, null, 2);
 }
 
+async function pathExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
 function normalizeRepository(value) {
   const raw = typeof value === "string" ? value : value?.url;
   if (!raw) {
@@ -211,6 +224,12 @@ function missingClaudeCodeError() {
   return error;
 }
 
+function invalidPresetStoreError() {
+  const error = new Error("Preset store is invalid.");
+  error.code = "PRESET_STORE_INVALID";
+  return error;
+}
+
 function assertPresetContent(value) {
   if (!value || Array.isArray(value) || typeof value !== "object") {
     throw new Error("JSON 内容必须是一个对象。");
@@ -248,22 +267,34 @@ function normalizePresetEntry(preset) {
   };
 }
 
+function normalizePresetStore(parsed) {
+  const presetList = Array.isArray(parsed) ? parsed : parsed?.presets;
+
+  if (!Array.isArray(presetList)) {
+    throw invalidPresetStoreError();
+  }
+
+  const customPresets = presetList
+    .map(normalizePresetEntry)
+    .filter((preset) => preset && preset.name !== OFFICIAL_PRESET.name);
+
+  return {
+    presets: [OFFICIAL_PRESET, ...customPresets]
+  };
+}
+
+async function initializePresetStore() {
+  const initialStore = { presets: [OFFICIAL_PRESET] };
+  await writeJson(PRESET_STORE_PATH, initialStore);
+  return initialStore;
+}
+
 async function readPresetStore() {
   await ensureAppStorageDir();
 
   try {
     const parsed = await readJson(PRESET_STORE_PATH);
-    if (!Array.isArray(parsed.presets)) {
-      throw new Error("Preset store is invalid.");
-    }
-
-    const customPresets = parsed.presets
-      .map(normalizePresetEntry)
-      .filter((preset) => preset && preset.name !== OFFICIAL_PRESET.name);
-
-    const normalizedStore = {
-      presets: [OFFICIAL_PRESET, ...customPresets]
-    };
+    const normalizedStore = normalizePresetStore(parsed);
 
     if (stableStringify(parsed) !== stableStringify(normalizedStore)) {
       await writeJson(PRESET_STORE_PATH, normalizedStore);
@@ -271,13 +302,15 @@ async function readPresetStore() {
 
     return normalizedStore;
   } catch (error) {
-    if (error.code !== "ENOENT") {
+    if (
+      error.code !== "ENOENT" &&
+      error.code !== "PRESET_STORE_INVALID" &&
+      !(error instanceof SyntaxError)
+    ) {
       throw error;
     }
 
-    const initialStore = { presets: [OFFICIAL_PRESET] };
-    await writeJson(PRESET_STORE_PATH, initialStore);
-    return initialStore;
+    return initializePresetStore();
   }
 }
 
@@ -292,7 +325,21 @@ async function savePresetStore(presets) {
 }
 
 async function readSettingsPayload() {
+  const installed = await pathExists(SETTINGS_PATH);
   const presetStore = await readPresetStore();
+
+  if (!installed) {
+    return {
+      installed: false,
+      settingsPath: SETTINGS_PATH,
+      appStorageDir: APP_STORAGE_DIR,
+      presetStorePath: PRESET_STORE_PATH,
+      backupDir: BACKUP_DIR,
+      parsed: { env: {} },
+      raw: "",
+      presets: presetStore.presets
+    };
+  }
 
   try {
     const raw = await fs.readFile(SETTINGS_PATH, "utf8");

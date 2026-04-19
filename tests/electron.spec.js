@@ -153,6 +153,83 @@ test("legacy preset files are ignored when the JOSH store is missing", async () 
   }
 });
 
+test("missing Claude Code config still initializes the Official preset store", async () => {
+  const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "josh-missing-claude-"));
+
+  const electronApp = await electron.launch({
+    executablePath: electronBinary,
+    args: [path.join(process.cwd(), ".")],
+    env: {
+      ...process.env,
+      HOME: fakeHome,
+      ELECTRON_RENDERER_URL: "http://127.0.0.1:4173"
+    }
+  });
+
+  try {
+    const window = await electronApp.firstWindow();
+
+    await window.waitForLoadState("domcontentloaded");
+    await expect(window.locator(".preset-row")).toHaveCount(1);
+    await expect(window.locator(".preset-row").first()).toContainText("Official");
+    await expect(window.getByText(/^未找到 Claude Code$|^Claude Code Not Found$/)).toBeVisible();
+
+    const savedPresets = JSON.parse(
+      await fs.readFile(path.join(fakeHome, ".josh", "presets.json"), "utf8")
+    );
+    expect(savedPresets).toEqual({
+      presets: [
+        {
+          name: "Official",
+          content: {}
+        }
+      ]
+    });
+  } finally {
+    await electronApp.close();
+  }
+});
+
+test("invalid preset store is healed back to Official instead of crashing", async () => {
+  const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "josh-invalid-store-"));
+  const appDir = path.join(fakeHome, ".josh");
+  await fs.mkdir(appDir, { recursive: true });
+  await fs.writeFile(path.join(appDir, "presets.json"), "{\"broken\":true}", "utf8");
+
+  const electronApp = await electron.launch({
+    executablePath: electronBinary,
+    args: [path.join(process.cwd(), ".")],
+    env: {
+      ...process.env,
+      HOME: fakeHome,
+      ELECTRON_RENDERER_URL: "http://127.0.0.1:4173"
+    }
+  });
+
+  try {
+    const window = await electronApp.firstWindow();
+
+    await window.waitForLoadState("domcontentloaded");
+    await expect(window.locator(".preset-row")).toHaveCount(1);
+    await expect(window.locator(".preset-row").first()).toContainText("Official");
+    await expect(window.getByText(/^未找到 Claude Code$|^Claude Code Not Found$/)).toBeVisible();
+
+    const savedPresets = JSON.parse(
+      await fs.readFile(path.join(fakeHome, ".josh", "presets.json"), "utf8")
+    );
+    expect(savedPresets).toEqual({
+      presets: [
+        {
+          name: "Official",
+          content: {}
+        }
+      ]
+    });
+  } finally {
+    await electronApp.close();
+  }
+});
+
 test("desktop bridge exposes auto-update state", async () => {
   const fakeHome = await fs.mkdtemp(path.join(os.tmpdir(), "josh-update-"));
   const claudeDir = path.join(fakeHome, ".claude");
@@ -189,7 +266,7 @@ test("desktop bridge exposes auto-update state", async () => {
 
     const updates = await window.evaluate(() => window.joshUpdates.read());
 
-    expect(updates.currentVersion).toBe("0.1.4");
+    expect(updates.currentVersion).toBe("0.1.6");
     expect(updates.repo).toBe("vinzeny/josh");
     expect(updates.status).toBe("development");
     expect(updates.canCheck).toBe(false);
