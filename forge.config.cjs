@@ -1,4 +1,6 @@
+const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 function resolveGitHubRepository() {
   const fullRepository =
@@ -26,10 +28,33 @@ const repository = resolveGitHubRepository();
 const appIconPath = path.join(__dirname, "src", "assets", "icon");
 const dmgIconPath = path.join(__dirname, "src", "assets", "icon.icns");
 
+function adHocSignPackagedApps(_forgeConfig, packageResult) {
+  if (process.platform !== "darwin") {
+    return;
+  }
+
+  for (const outputPath of packageResult.outputPaths) {
+    const entries = fs.readdirSync(outputPath, { withFileTypes: true });
+    const appBundle = entries.find((entry) => entry.isDirectory() && entry.name.endsWith(".app"));
+
+    if (!appBundle) {
+      continue;
+    }
+
+    execFileSync("codesign", ["--force", "--deep", "--sign", "-", path.join(outputPath, appBundle.name)], {
+      stdio: "inherit"
+    });
+  }
+}
+
 module.exports = {
   outDir: "release",
+  hooks: {
+    postPackage: adHocSignPackagedApps
+  },
   packagerConfig: {
     asar: true,
+    osxSign: {},
     appBundleId: "com.josh.app",
     appCategoryType: "public.app-category.developer-tools",
     executableName: "JOSH",
