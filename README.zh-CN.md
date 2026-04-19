@@ -42,5 +42,6 @@ JOSH 会自动把旧的内置名字，比如 `official json`，归一成 `Offici
 - 现在已经接入 Electron Forge，会分别生成 macOS `arm64` 和 `x64` 两套 `zip` / `dmg`
 - 本地执行 `npm run make`，会同时产出 Apple 芯片版和 Intel 版，文件都在 `release/make`
 - 推送像 `v0.1.0` 这样的 tag，就会触发 GitHub Actions 发布
+- 如果手动触发 Release workflow，请在 `tag` 输入框里填写 `v0.1.6` 这样的版本号
 - 工作流会分别在 Apple Silicon 和 Intel macOS runner 上构建，再统一上传到同一个 GitHub Draft Release
 - 现在默认还是未签名包，macOS 可能会提示手动放行一次

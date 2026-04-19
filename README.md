@@ -42,5 +42,6 @@ JOSH automatically normalizes old built-in names such as `official json` into `O
 - Electron Forge is configured for macOS `arm64` and `x64`, each with `zip` and `dmg`
 - Run `npm run make` to generate both Apple Silicon and Intel artifacts in `release/make`
 - Push a tag like `v0.1.0` to trigger GitHub Actions publishing
+- If you trigger the Release workflow manually, enter a tag like `v0.1.6` in the `tag` input
 - The workflow builds `arm64` on Apple Silicon runners and `x64` on Intel runners, then uploads both to one draft GitHub Release
 - Builds are unsigned by default, so macOS may ask users to open the app manually
