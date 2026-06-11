@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("claudeSettings", {
   read: () => ipcRenderer.invoke("settings:read"),
@@ -21,5 +21,37 @@ contextBridge.exposeInMainWorld("joshUpdates", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("updates:changed", listener);
     return () => ipcRenderer.removeListener("updates:changed", listener);
+  }
+});
+
+contextBridge.exposeInMainWorld("joshFiles", {
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return "";
+    }
+  },
+  listDirectory: (payload) => ipcRenderer.invoke("files:list-directory", payload)
+});
+
+contextBridge.exposeInMainWorld("joshTerminals", {
+  list: (activeId) => ipcRenderer.invoke("terminals:list", activeId),
+  selectFolder: () => ipcRenderer.invoke("terminals:select-folder"),
+  create: (options) => ipcRenderer.invoke("terminals:create", options),
+  write: (payload) => ipcRenderer.invoke("terminals:write", payload),
+  rename: (payload) => ipcRenderer.invoke("terminals:rename", payload),
+  delete: (payload) => ipcRenderer.invoke("terminals:delete", payload),
+  deleteFolder: (payload) => ipcRenderer.invoke("terminals:delete-folder", payload),
+  resize: (payload) => ipcRenderer.invoke("terminals:resize", payload),
+  onData: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("terminals:data", listener);
+    return () => ipcRenderer.removeListener("terminals:data", listener);
+  },
+  onDidChange: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("terminals:changed", listener);
+    return () => ipcRenderer.removeListener("terminals:changed", listener);
   }
 });

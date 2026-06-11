@@ -11,7 +11,8 @@
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
-    "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
+    "dev": "JOSH_TERMINAL_CWD=\"$PWD\" concurrently -k \"vite\" \"wait-on tcp:5174 && electron .\"",
+    "postinstall": "node scripts/fix-node-pty-permissions.cjs",
     "build": "vite build",
     "start": "electron .",
     "package": "npm run build && electron-forge package",
@@ -26,9 +27,12 @@
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",
     "@tailwindcss/vite": "^4.2.2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.8.0",
+    "node-pty": "^1.1.0",
     "radix-ui": "^1.4.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

@@ -2,6 +2,7 @@ import {
   app,
   autoUpdater,
   BrowserWindow,
+  dialog,
   Menu,
   Tray,
   ipcMain,
@@ -15,19 +16,26 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { makeUserNotifier, UpdateSourceType, updateElectronApp } = require("update-electron-app");
+const pty = require("node-pty");
 
-const APP_NAME = "JOSH";
+const isDev = !app.isPackaged;
+const APP_NAME = isDev ? "JOSH Dev" : "JOSH";
 const DEFAULT_UPDATE_REPOSITORY = "vinzeny/josh";
 const APP_STORAGE_DIR = path.join(os.homedir(), ".josh");
 const SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json");
+const CODEX_CONFIG_PATH = path.join(os.homedir(), ".codex", "config.toml");
 const BACKUP_DIR = path.join(APP_STORAGE_DIR, "backups");
 const PRESET_STORE_PATH = path.join(APP_STORAGE_DIR, "presets.json");
-const isDev = !app.isPackaged;
 const rendererUrl = process.env.ELECTRON_RENDERER_URL;
 const OFFICIAL_NAME_ALIASES = new Set(["official", "official json"]);
 const OFFICIAL_PRESET = {
   name: "Official",
-  content: {}
+  content: {
+    claude: {
+      env: {}
+    },
+    codex: {}
+  }
 };
 let mainWindow = null;
 let tray = null;
@@ -35,29 +43,53 @@ let isQuitting = false;
 let autoUpdateInitialized = false;
 let autoUpdateEventsBound = false;
 let updateState = createInitialUpdateState();
+let folderCounter = 0;
+let terminalCounter = 0;
+let didInitializeDefaultTerminal = false;
+const terminalFolders = new Map();
+const terminalSessions = new Map();
+const FILE_TREE_MAX_ENTRIES = 400;
+const FILE_TREE_IGNORED_NAMES = new Set([
+  ".DS_Store",
+  ".git",
+  ".next",
+  ".turbo",
+  ".vite",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out"
+]);
 
 app.setName(APP_NAME);
 app.setPath("userData", path.join(app.getPath("appData"), APP_NAME));
-nativeTheme.themeSource = "dark";
+nativeTheme.themeSource = "system";
 
 function createWindow() {
   const window = new BrowserWindow({
-    width: 760,
-    height: 620,
-    minWidth: 680,
+    width: 1000,
+    height: 720,
+    minWidth: 720,
     minHeight: 520,
     title: "",
     backgroundColor: "#111312",
     webPreferences: {
       preload: path.join(app.getAppPath(), "electron", "preload.cjs"),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      webviewTag: true
     }
   });
 
   window.on("page-title-updated", (event) => {
     event.preventDefault();
   });
+
+  window.webContents.on("will-navigate", (event) => {
+    event.preventDefault();
+  });
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
 
   window.on("close", (event) => {
     if (isQuitting || process.platform !== "darwin") {
@@ -71,10 +103,13 @@ function createWindow() {
   if (rendererUrl) {
     window.loadURL(rendererUrl);
   } else if (isDev) {
-    window.loadURL("http://localhost:5173");
+    window.loadURL("http://localhost:5174");
   } else {
     window.loadFile(path.join(app.getAppPath(), "dist", "index.html"));
   }
+
+  window.show();
+  window.focus();
 
   mainWindow = window;
   return window;
@@ -204,10 +239,45 @@ function currentEnv(settings) {
   return env;
 }
 
+function currentCodex(settings) {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return {};
+  }
+
+  const codex = settings.codex;
+  if (!codex || typeof codex !== "object" || Array.isArray(codex)) {
+    return {};
+  }
+
+  return normalizeCodexConfig(codex);
+}
+
+function currentPresetContent(settings) {
+  return normalizePresetContent({
+    claude: {
+      env: currentEnv(settings)
+    },
+    codex: currentCodex(settings)
+  });
+}
+
 function findMatchingPresetName(settings, presets) {
-  const current = stableStringify(currentEnv(settings));
-  const matched = presets.find((preset) => stableStringify(preset.content) === current);
+  const current = stableStringify(currentPresetContent(settings));
+  const matched = presets.find(
+    (preset) => stableStringify(normalizePresetContent(preset.content)) === current
+  );
   return matched?.name ?? null;
+}
+
+function currentModelLabel(settings, fallback) {
+  const claudeModel = currentEnv(settings).ANTHROPIC_MODEL?.trim();
+  const codexModel = currentCodex(settings).model?.trim();
+
+  if (claudeModel && codexModel) {
+    return `${claudeModel} / ${codexModel}`;
+  }
+
+  return claudeModel || codexModel || fallback;
 }
 
 function timestampLabel() {
@@ -219,9 +289,467 @@ function isOfficialPresetName(name) {
 }
 
 function missingClaudeCodeError() {
-  const error = new Error("未找到 Claude Code 配置，请先安装并启动一次 Claude Code。");
+  const error = new Error("未找到 Claude Code 或 Codex 配置，请先安装并启动一次。");
   error.code = "CLAUDE_CODE_MISSING";
   return error;
+}
+
+function sanitizeTerminalName(value, fallback) {
+  const name = String(value ?? "").trim();
+  return name || fallback;
+}
+
+function serializeTerminalFolder(folder) {
+  const terminalIds = Array.from(terminalSessions.values())
+    .filter((session) => session.folderId === folder.id)
+    .map((session) => session.id);
+
+  return {
+    id: folder.id,
+    name: folder.name,
+    cwd: folder.cwd,
+    terminalIds,
+    createdAt: folder.createdAt,
+    updatedAt: folder.updatedAt
+  };
+}
+
+function serializeTerminal(session) {
+  return {
+    id: session.id,
+    name: session.name,
+    folderId: session.folderId,
+    cwd: session.cwd,
+    running: session.running,
+    buffer: session.buffer,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt
+  };
+}
+
+function ensureTerminalFolder(cwd) {
+  const normalizedCwd = path.resolve(cwd || os.homedir());
+  const existing = Array.from(terminalFolders.values()).find(
+    (folder) => folder.cwd === normalizedCwd
+  );
+
+  if (existing) {
+    existing.updatedAt = new Date().toISOString();
+    return existing;
+  }
+
+  const now = new Date().toISOString();
+  const folder = {
+    id: `folder-${++folderCounter}`,
+    name: path.basename(normalizedCwd) || normalizedCwd,
+    cwd: normalizedCwd,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  terminalFolders.set(folder.id, folder);
+  return folder;
+}
+
+function defaultTerminalCwd() {
+  const candidates = [
+    process.env.JOSH_TERMINAL_CWD,
+    process.env.INIT_CWD,
+    process.cwd(),
+    process.env.PWD,
+    isDev ? app.getAppPath() : ""
+  ];
+
+  for (const candidate of candidates) {
+    if (
+      candidate &&
+      path.isAbsolute(candidate) &&
+      candidate !== "/" &&
+      !candidate.includes(`${path.sep}.app${path.sep}Contents`)
+    ) {
+      return candidate;
+    }
+  }
+
+  return os.homedir();
+}
+
+function buildTerminalEnvironment() {
+  const env = { ...process.env };
+
+  delete env.SHELL_SESSION_ID;
+  delete env.SHELL_SESSION_FILE;
+  delete env.SHELL_SESSION_HISTORY;
+  delete env.SHELL_SESSION_HISTFILE;
+
+  return {
+    ...env,
+    TERM: "xterm-256color",
+    TERM_PROGRAM: process.platform === "darwin" ? "Apple_Terminal" : APP_NAME,
+    JOSH_TERM_PROGRAM: APP_NAME,
+    TERM_PROGRAM_VERSION: app.getVersion(),
+    COLORTERM: "truecolor",
+    SHELL_SESSIONS_DISABLE: "1",
+    PROMPT_EOL_MARK: ""
+  };
+}
+
+function terminalShellArgs(shell) {
+  const shellName = path.basename(String(shell));
+  return /^(bash|fish|sh|zsh)$/.test(shellName) ? ["-l"] : [];
+}
+
+function terminalLoginBanner() {
+  if (process.platform !== "darwin") {
+    return "";
+  }
+
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).formatToParts(new Date()).map((part) => [part.type, part.value]));
+  const formatted = `${parts.weekday} ${parts.month} ${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+
+  return `Last login: ${formatted} on ${process.env.TTY_NAME || "ttys000"}\r\n`;
+}
+
+function skipAnsiSequence(value, index) {
+  if (value[index] !== "\u001b") {
+    return index;
+  }
+
+  const next = value[index + 1];
+  if (next === "[") {
+    let cursor = index + 2;
+    while (cursor < value.length) {
+      const code = value.charCodeAt(cursor);
+      cursor += 1;
+
+      if (code >= 0x40 && code <= 0x7e) {
+        return cursor;
+      }
+    }
+
+    return value.length;
+  }
+
+  if (next === "]") {
+    let cursor = index + 2;
+    while (cursor < value.length) {
+      if (value[cursor] === "\u0007") {
+        return cursor + 1;
+      }
+
+      if (value[cursor] === "\u001b" && value[cursor + 1] === "\\") {
+        return cursor + 2;
+      }
+
+      cursor += 1;
+    }
+
+    return value.length;
+  }
+
+  return Math.min(index + 2, value.length);
+}
+
+function stripInitialTerminalBlankRows(output) {
+  let cursor = 0;
+  let rowStart = 0;
+
+  while (cursor < output.length) {
+    const character = output[cursor];
+
+    if (character === "\u001b") {
+      cursor = skipAnsiSequence(output, cursor);
+      continue;
+    }
+
+    if (character === "\r" || character === " " || character === "\t") {
+      cursor += 1;
+      continue;
+    }
+
+    if (character === "\n") {
+      cursor += 1;
+      rowStart = cursor;
+      continue;
+    }
+
+    return output.slice(rowStart);
+  }
+
+  return "";
+}
+
+function normalizeInitialTerminalOutput(session, data) {
+  const output = String(data ?? "");
+  if (session.hasTerminalOutput) {
+    return output;
+  }
+
+  const normalizedOutput = stripInitialTerminalBlankRows(output);
+  if (!normalizedOutput) {
+    return "";
+  }
+
+  session.hasTerminalOutput = true;
+  return normalizedOutput;
+}
+
+async function resolveDirectory(inputPath, basePath = os.homedir()) {
+  const rawPath = String(inputPath || "").trim();
+  const expandedPath = rawPath.startsWith("~")
+    ? path.join(os.homedir(), rawPath.slice(1))
+    : rawPath;
+  const resolvedPath = path.resolve(basePath, expandedPath || ".");
+  const stat = await fs.stat(resolvedPath);
+
+  if (!stat.isDirectory()) {
+    throw new Error("目标路径不是目录。");
+  }
+
+  return resolvedPath;
+}
+
+async function readFileTreeDirectory(inputPath) {
+  const directory = await resolveDirectory(inputPath);
+  const dirents = await fs.readdir(directory, { withFileTypes: true });
+  const entries = dirents
+    .filter((entry) => !FILE_TREE_IGNORED_NAMES.has(entry.name))
+    .map((entry) => ({
+      name: entry.name,
+      path: path.join(directory, entry.name),
+      type: entry.isDirectory() ? "directory" : "file",
+      hidden: entry.name.startsWith(".")
+    }))
+    .sort((left, right) => {
+      if (left.type !== right.type) {
+        return left.type === "directory" ? -1 : 1;
+      }
+
+      return left.name.localeCompare(right.name, undefined, {
+        numeric: true,
+        sensitivity: "base"
+      });
+    })
+    .slice(0, FILE_TREE_MAX_ENTRIES);
+
+  return {
+    path: directory,
+    name: path.basename(directory) || directory,
+    entries
+  };
+}
+
+function createTerminalSession(options = {}) {
+  const id = `terminal-${++terminalCounter}`;
+  const folder = options.folderId && terminalFolders.has(options.folderId)
+    ? terminalFolders.get(options.folderId)
+    : ensureTerminalFolder(options.cwd || defaultTerminalCwd());
+  const cwd = folder.cwd;
+  const now = new Date().toISOString();
+  const shell = process.platform === "win32"
+    ? process.env.COMSPEC || "powershell.exe"
+    : process.platform === "darwin"
+      ? process.env.SHELL || "/bin/zsh"
+      : process.env.SHELL || "/bin/bash";
+  const session = {
+    id,
+    name: sanitizeTerminalName(options.name, `Terminal ${terminalCounter}`),
+    folderId: folder.id,
+    cwd,
+    running: true,
+    buffer: terminalLoginBanner(),
+    hasTerminalOutput: false,
+    ptyProcess: null,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  session.ptyProcess = pty.spawn(shell, terminalShellArgs(shell), {
+    name: "xterm-256color",
+    cols: Math.max(80, Number(options.cols) || 120),
+    rows: Math.max(24, Number(options.rows) || 32),
+    cwd,
+    env: buildTerminalEnvironment()
+  });
+
+  session.ptyProcess.onData((data) => {
+    const output = normalizeInitialTerminalOutput(session, data);
+    if (!output) {
+      return;
+    }
+
+    session.buffer = `${session.buffer}${output}`.slice(-200000);
+    session.updatedAt = new Date().toISOString();
+    notifyRendererTerminalData(session.id, output);
+  });
+
+  session.ptyProcess.onExit(({ exitCode }) => {
+    session.running = false;
+    session.updatedAt = new Date().toISOString();
+    const data = `\r\n[process exited with code ${exitCode}]\r\n`;
+    session.buffer = `${session.buffer}${data}`.slice(-200000);
+    notifyRendererTerminalData(session.id, data);
+    notifyRendererTerminalsChanged();
+  });
+
+  terminalSessions.set(id, session);
+  folder.updatedAt = now;
+  return session;
+}
+
+function ensureInitialTerminal() {
+  if (
+    terminalSessions.size === 0 &&
+    terminalFolders.size === 0 &&
+    !didInitializeDefaultTerminal
+  ) {
+    didInitializeDefaultTerminal = true;
+    createTerminalSession({ name: "Terminal 1" });
+  }
+}
+
+function getTerminalSession(id) {
+  ensureInitialTerminal();
+
+  const session = terminalSessions.get(id) ?? terminalSessions.values().next().value;
+  if (!session) {
+    throw new Error("未找到 Terminal。");
+  }
+
+  return session;
+}
+
+function readTerminalsPayload(activeId, activeFolderId) {
+  ensureInitialTerminal();
+
+  const terminals = Array.from(terminalSessions.values()).map(serializeTerminal);
+  const folders = Array.from(terminalFolders.values()).map(serializeTerminalFolder);
+  const explicitFolder = terminalFolders.get(activeFolderId);
+  const requestedTerminal = terminalSessions.get(activeId);
+  const requestedTerminalInFolder =
+    requestedTerminal &&
+    explicitFolder &&
+    (requestedTerminal.folderId === explicitFolder.id || requestedTerminal.cwd === explicitFolder.cwd);
+  const folderTerminal = explicitFolder
+    ? Array.from(terminalSessions.values()).find(
+        (session) => session.folderId === explicitFolder.id || session.cwd === explicitFolder.cwd
+      )
+    : null;
+  const activeTerminal = explicitFolder
+    ? (requestedTerminalInFolder ? requestedTerminal : folderTerminal)
+    : requestedTerminal ?? terminalSessions.values().next().value ?? null;
+  const nextActiveFolderId =
+    explicitFolder?.id ?? activeTerminal?.folderId ?? folders[0]?.id ?? "";
+
+  return {
+    folders,
+    terminals,
+    activeTerminalId: activeTerminal?.id ?? "",
+    activeFolderId: nextActiveFolderId
+  };
+}
+
+function writeTerminalInput(id, input) {
+  const session = getTerminalSession(id);
+
+  if (!session.running || !session.ptyProcess) {
+    return serializeTerminal(session);
+  }
+
+  session.ptyProcess.write(String(input ?? ""));
+  session.updatedAt = new Date().toISOString();
+  return serializeTerminal(session);
+}
+
+function renameTerminal(id, name) {
+  const session = getTerminalSession(id);
+  session.name = sanitizeTerminalName(name, session.name);
+  session.updatedAt = new Date().toISOString();
+  notifyRendererTerminalsChanged();
+  return serializeTerminal(session);
+}
+
+function deleteTerminal(id) {
+  const session = terminalSessions.get(id);
+  if (!session) {
+    return null;
+  }
+
+  const folderId = session.folderId;
+  destroyTerminalSession(session);
+  terminalSessions.delete(id);
+  const folder = terminalFolders.get(folderId);
+  if (folder) {
+    folder.updatedAt = new Date().toISOString();
+  }
+  notifyRendererTerminalsChanged(undefined, folderId);
+  return serializeTerminal(session);
+}
+
+function deleteTerminalFolder(id) {
+  const folder = terminalFolders.get(id);
+  if (!folder) {
+    return null;
+  }
+
+  for (const session of Array.from(terminalSessions.values())) {
+    if (session.folderId === id) {
+      destroyTerminalSession(session);
+      terminalSessions.delete(session.id);
+    }
+  }
+
+  terminalFolders.delete(id);
+  notifyRendererTerminalsChanged();
+  return serializeTerminalFolder(folder);
+}
+
+function resizeTerminal(id, dimensions = {}) {
+  const session = getTerminalSession(id);
+  const cols = Math.max(20, Number(dimensions.cols) || 120);
+  const rows = Math.max(8, Number(dimensions.rows) || 32);
+
+  if (session.running && session.ptyProcess) {
+    session.ptyProcess.resize(cols, rows);
+  }
+
+  return serializeTerminal(session);
+}
+
+function destroyTerminalSession(session) {
+  if (!session?.ptyProcess) {
+    return;
+  }
+
+  try {
+    session.ptyProcess.kill();
+  } catch {
+    // Process may already be gone.
+  }
+}
+
+function notifyRendererTerminalData(id, data) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send("terminals:data", { id, data });
+}
+
+function notifyRendererTerminalsChanged(activeId, activeFolderId) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send("terminals:changed", readTerminalsPayload(activeId, activeFolderId));
 }
 
 function invalidPresetStoreError() {
@@ -230,28 +758,127 @@ function invalidPresetStoreError() {
   return error;
 }
 
-function assertPresetContent(value) {
+function isPlainObject(value) {
   if (!value || Array.isArray(value) || typeof value !== "object") {
-    throw new Error("JSON 内容必须是一个对象。");
+    return false;
+  }
+
+  return true;
+}
+
+function assertStringMap(value, label) {
+  if (!isPlainObject(value)) {
+    throw new Error(`${label} 必须是一个对象。`);
   }
 
   for (const [key, entry] of Object.entries(value)) {
     if (typeof entry !== "string") {
-      throw new Error(`env.${key} 必须是字符串。`);
+      throw new Error(`${label}.${key} 必须是字符串。`);
     }
   }
 }
 
-function normalizePresetContent(value) {
-  if (!value || Array.isArray(value) || typeof value !== "object") {
+function normalizeStringMap(value, options = {}) {
+  if (!isPlainObject(value)) {
     return {};
   }
 
-  if ("env" in value && value.env && typeof value.env === "object" && !Array.isArray(value.env)) {
-    return value.env;
+  const allowEmpty = options.allowEmpty !== false;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, entry]) => typeof entry === "string")
+      .filter(([, entry]) => allowEmpty || entry.trim())
+  );
+}
+
+function isStructuredPresetContent(value) {
+  return isPlainObject(value) && ("claude" in value || "codex" in value);
+}
+
+function extractClaudeEnv(value) {
+  if (!isPlainObject(value)) {
+    return {};
   }
 
-  return value;
+  if (isStructuredPresetContent(value)) {
+    const claude = isPlainObject(value.claude) ? value.claude : {};
+    if (isPlainObject(claude.env)) {
+      return normalizeStringMap(claude.env);
+    }
+
+    if (isPlainObject(value.env)) {
+      return normalizeStringMap(value.env);
+    }
+
+    return {};
+  }
+
+  if (isPlainObject(value.env)) {
+    return normalizeStringMap(value.env);
+  }
+
+  return normalizeStringMap(value);
+}
+
+function normalizeCodexConfig(value) {
+  if (!isPlainObject(value)) {
+    return {};
+  }
+
+  const model = typeof value.model === "string" ? value.model.trim() : "";
+  const reasoningEffort = typeof value.model_reasoning_effort === "string"
+    ? value.model_reasoning_effort.trim()
+    : "";
+  const codex = {};
+
+  if (model) {
+    codex.model = model;
+  }
+
+  if (reasoningEffort) {
+    codex.model_reasoning_effort = reasoningEffort;
+  }
+
+  return codex;
+}
+
+function extractCodexConfig(value) {
+  if (!isPlainObject(value)) {
+    return {};
+  }
+
+  if (isStructuredPresetContent(value)) {
+    return normalizeCodexConfig(value.codex);
+  }
+
+  return normalizeCodexConfig({
+    model: value.CODEX_MODEL,
+    model_reasoning_effort: value.CODEX_REASONING_EFFORT
+  });
+}
+
+function assertPresetContent(value) {
+  if (!isPlainObject(value)) {
+    throw new Error("JSON 内容必须是一个对象。");
+  }
+
+  if (isStructuredPresetContent(value)) {
+    const claude = isPlainObject(value.claude) ? value.claude : {};
+    assertStringMap(isPlainObject(claude.env) ? claude.env : {}, "claude.env");
+    assertStringMap(isPlainObject(value.codex) ? value.codex : {}, "codex");
+    return;
+  }
+
+  assertStringMap(isPlainObject(value.env) ? value.env : value, "env");
+}
+
+function normalizePresetContent(value) {
+  return {
+    claude: {
+      env: extractClaudeEnv(value)
+    },
+    codex: extractCodexConfig(value)
+  };
 }
 
 function normalizePresetEntry(preset) {
@@ -260,7 +887,7 @@ function normalizePresetEntry(preset) {
   }
 
   const isOfficial = isOfficialPresetName(preset.name);
-  const content = isOfficial ? {} : normalizePresetContent(preset.content ?? preset.env);
+  const content = isOfficial ? OFFICIAL_PRESET.content : normalizePresetContent(preset.content ?? preset.env);
   return {
     name: isOfficial ? OFFICIAL_PRESET.name : preset.name,
     content
@@ -324,18 +951,163 @@ async function savePresetStore(presets) {
   return { presets: merged };
 }
 
-async function readSettingsPayload() {
-  const installed = await pathExists(SETTINGS_PATH);
-  const presetStore = await readPresetStore();
+function stripTomlComment(value) {
+  let quote = "";
 
-  if (!installed) {
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    const previous = value[index - 1];
+
+    if ((char === "\"" || char === "'") && previous !== "\\") {
+      quote = quote === char ? "" : quote || char;
+      continue;
+    }
+
+    if (char === "#" && !quote) {
+      return value.slice(0, index);
+    }
+  }
+
+  return value;
+}
+
+function parseTomlStringValue(value) {
+  const trimmed = stripTomlComment(value).trim();
+
+  if (!trimmed) {
+    return "";
+  }
+
+  if (trimmed.startsWith("\"")) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return trimmed.slice(1, trimmed.lastIndexOf("\""));
+    }
+  }
+
+  if (trimmed.startsWith("'")) {
+    const closingIndex = trimmed.indexOf("'", 1);
+    return closingIndex > 0 ? trimmed.slice(1, closingIndex) : trimmed.slice(1);
+  }
+
+  return trimmed;
+}
+
+function isTomlTableHeader(line) {
+  return /^\s*\[[^\]]+\]/.test(line);
+}
+
+function readTopLevelTomlString(raw, key) {
+  const lines = String(raw ?? "").split(/\r?\n/);
+  const pattern = new RegExp(`^\\s*${key}\\s*=`);
+
+  for (const line of lines) {
+    if (isTomlTableHeader(line)) {
+      break;
+    }
+
+    if (!pattern.test(line)) {
+      continue;
+    }
+
+    return parseTomlStringValue(line.slice(line.indexOf("=") + 1));
+  }
+
+  return "";
+}
+
+function encodeTomlString(value) {
+  return JSON.stringify(String(value));
+}
+
+function upsertTopLevelTomlString(raw, key, value) {
+  const stringValue = String(value ?? "").trim();
+  const hadTrailingNewline = /\r?\n$/.test(raw ?? "");
+  const lines = raw ? String(raw).replace(/\r\n/g, "\n").split("\n") : [];
+  const pattern = new RegExp(`^\\s*${key}\\s*=`);
+  const tableIndex = lines.findIndex(isTomlTableHeader);
+  const searchEnd = tableIndex >= 0 ? tableIndex : lines.length;
+  const existingIndex = lines.findIndex((line, index) => index < searchEnd && pattern.test(line));
+
+  if (!stringValue) {
+    if (existingIndex >= 0) {
+      lines.splice(existingIndex, 1);
+    }
+    return lines.length ? `${lines.join("\n")}${hadTrailingNewline ? "\n" : ""}` : "";
+  }
+
+  const nextLine = `${key} = ${encodeTomlString(stringValue)}`;
+  if (existingIndex >= 0) {
+    lines[existingIndex] = nextLine;
+  } else {
+    lines.splice(searchEnd, 0, nextLine);
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function parseCodexConfig(raw) {
+  return normalizeCodexConfig({
+    model: readTopLevelTomlString(raw, "model"),
+    model_reasoning_effort: readTopLevelTomlString(raw, "model_reasoning_effort")
+  });
+}
+
+function updateCodexConfigRaw(raw, codex) {
+  let nextRaw = raw ?? "";
+
+  nextRaw = upsertTopLevelTomlString(nextRaw, "model", codex.model);
+  nextRaw = upsertTopLevelTomlString(
+    nextRaw,
+    "model_reasoning_effort",
+    codex.model_reasoning_effort
+  );
+
+  return nextRaw;
+}
+
+async function readCodexConfigPayload() {
+  try {
+    const raw = await fs.readFile(CODEX_CONFIG_PATH, "utf8");
+    return {
+      installed: true,
+      raw,
+      parsed: parseCodexConfig(raw)
+    };
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+
     return {
       installed: false,
+      raw: "",
+      parsed: {}
+    };
+  }
+}
+
+async function readSettingsPayload() {
+  const claudeInstalled = await pathExists(SETTINGS_PATH);
+  const codexConfig = await readCodexConfigPayload();
+  const installed = claudeInstalled || codexConfig.installed;
+  const presetStore = await readPresetStore();
+
+  if (!claudeInstalled) {
+    return {
+      installed,
+      claudeInstalled: false,
+      codexInstalled: codexConfig.installed,
       settingsPath: SETTINGS_PATH,
+      codexConfigPath: CODEX_CONFIG_PATH,
       appStorageDir: APP_STORAGE_DIR,
       presetStorePath: PRESET_STORE_PATH,
       backupDir: BACKUP_DIR,
-      parsed: { env: {} },
+      parsed: {
+        env: {},
+        codex: codexConfig.parsed
+      },
       raw: "",
       presets: presetStore.presets
     };
@@ -347,11 +1119,17 @@ async function readSettingsPayload() {
 
     return {
       installed: true,
+      claudeInstalled: true,
+      codexInstalled: codexConfig.installed,
       settingsPath: SETTINGS_PATH,
+      codexConfigPath: CODEX_CONFIG_PATH,
       appStorageDir: APP_STORAGE_DIR,
       presetStorePath: PRESET_STORE_PATH,
       backupDir: BACKUP_DIR,
-      parsed,
+      parsed: {
+        ...parsed,
+        codex: codexConfig.parsed
+      },
       raw,
       presets: presetStore.presets
     };
@@ -361,12 +1139,18 @@ async function readSettingsPayload() {
     }
 
     return {
-      installed: false,
+      installed: codexConfig.installed,
+      claudeInstalled: false,
+      codexInstalled: codexConfig.installed,
       settingsPath: SETTINGS_PATH,
+      codexConfigPath: CODEX_CONFIG_PATH,
       appStorageDir: APP_STORAGE_DIR,
       presetStorePath: PRESET_STORE_PATH,
       backupDir: BACKUP_DIR,
-      parsed: { env: {} },
+      parsed: {
+        env: {},
+        codex: codexConfig.parsed
+      },
       raw: "",
       presets: presetStore.presets
     };
@@ -375,31 +1159,81 @@ async function readSettingsPayload() {
 
 async function activateSettings(nextSettings) {
   assertPresetContent(nextSettings);
-  let current;
+  const normalized = normalizePresetContent(nextSettings);
+  const nextEnv = normalized.claude.env;
+  const nextCodex = normalized.codex;
+  let current = null;
+  let claudeInstalled = true;
+  let codexRaw = "";
+  let codexInstalled = true;
 
   try {
     current = await readJson(SETTINGS_PATH);
   } catch (error) {
     if (error.code === "ENOENT") {
-      throw missingClaudeCodeError();
+      claudeInstalled = false;
+    } else {
+      throw error;
     }
-    throw error;
   }
+
+  try {
+    codexRaw = await fs.readFile(CODEX_CONFIG_PATH, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      codexInstalled = false;
+    } else {
+      throw error;
+    }
+  }
+
+  const shouldWriteClaude = claudeInstalled;
+  const shouldWriteCodex = codexInstalled || Object.keys(nextCodex).length > 0;
+
+  if (!shouldWriteClaude && !shouldWriteCodex) {
+    throw missingClaudeCodeError();
+  }
+
+  let merged = current
+    ? {
+        ...current,
+        env: nextEnv
+      }
+    : {
+        env: nextEnv
+      };
+  let backupName = "";
+  let codexBackupName = "";
 
   await ensureBackupDir();
 
-  const backupName = `settings-${timestampLabel()}.json`;
-  await writeJson(path.join(BACKUP_DIR, backupName), current);
-  const merged = {
-    ...current,
-    env: nextSettings
+  if (shouldWriteClaude) {
+    backupName = `settings-${timestampLabel()}.json`;
+    await writeJson(path.join(BACKUP_DIR, backupName), current);
+    await writeJson(SETTINGS_PATH, merged);
+  }
+
+  if (shouldWriteCodex) {
+    if (codexInstalled) {
+      codexBackupName = `codex-config-${timestampLabel()}.toml`;
+      await fs.writeFile(path.join(BACKUP_DIR, codexBackupName), codexRaw, "utf8");
+    }
+
+    await fs.mkdir(path.dirname(CODEX_CONFIG_PATH), { recursive: true });
+    codexRaw = updateCodexConfigRaw(codexRaw, nextCodex);
+    await fs.writeFile(CODEX_CONFIG_PATH, codexRaw, "utf8");
+  }
+
+  merged = {
+    ...merged,
+    codex: parseCodexConfig(codexRaw)
   };
-  await writeJson(SETTINGS_PATH, merged);
 
   return {
     ok: true,
     saved: merged,
-    backupName
+    backupName,
+    codexBackupName
   };
 }
 
@@ -412,7 +1246,8 @@ function menuCopy() {
         openApp: "打开 JOSH",
         currentModel: "当前模型",
         notSet: "未设置",
-        missing: "未找到 Claude Code",
+        officialModel: "官方模型",
+        missing: "未找到 Claude Code 或 Codex",
         quickSwitch: "快捷切换",
         quit: "退出"
       }
@@ -420,7 +1255,8 @@ function menuCopy() {
         openApp: "Open JOSH",
         currentModel: "Current Model",
         notSet: "Not set",
-        missing: "Claude Code Not Found",
+        officialModel: "Official Model",
+        missing: "Claude Code or Codex Not Found",
         quickSwitch: "Quick Switch",
         quit: "Quit"
       };
@@ -589,10 +1425,12 @@ async function refreshTrayMenu() {
   const copy = menuCopy();
   const payload = await readSettingsPayload();
   const installed = payload.installed !== false;
-  const currentModel = currentEnv(payload.parsed).ANTHROPIC_MODEL?.trim() || copy.notSet;
   const activePresetName = installed
     ? findMatchingPresetName(payload.parsed, payload.presets)
     : null;
+  const currentModel = activePresetName === OFFICIAL_PRESET.name
+    ? copy.officialModel
+    : currentModelLabel(payload.parsed, copy.notSet);
 
   const menu = Menu.buildFromTemplate([
     {
@@ -761,6 +1599,99 @@ ipcMain.handle("presets:delete", async (_event, presetName) => {
   return response;
 });
 
+ipcMain.handle("terminals:list", async (_event, activeId) => {
+  return readTerminalsPayload(activeId);
+});
+
+ipcMain.handle("terminals:select-folder", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openDirectory", "createDirectory"],
+    title: "选择 Terminal 文件夹"
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return {
+      canceled: true,
+      ...readTerminalsPayload()
+    };
+  }
+
+  const cwd = await resolveDirectory(result.filePaths[0]);
+  const folder = ensureTerminalFolder(cwd);
+  notifyRendererTerminalsChanged(undefined, folder.id);
+
+  return {
+    canceled: false,
+    folder: serializeTerminalFolder(folder),
+    ...readTerminalsPayload(undefined, folder.id)
+  };
+});
+
+ipcMain.handle("terminals:create", async (_event, options = {}) => {
+  const cwd = options.cwd ? await resolveDirectory(options.cwd) : undefined;
+  const session = createTerminalSession({
+    name: options.name,
+    folderId: options.folderId,
+    cwd,
+    cols: options.cols,
+    rows: options.rows
+  });
+
+  notifyRendererTerminalsChanged(session.id, session.folderId);
+
+  return {
+    terminal: serializeTerminal(session),
+    ...readTerminalsPayload(session.id, session.folderId)
+  };
+});
+
+ipcMain.handle("terminals:write", async (_event, payload = {}) => {
+  const terminal = writeTerminalInput(payload.id, payload.data);
+  return {
+    terminal,
+    ...readTerminalsPayload(terminal.id, terminal.folderId)
+  };
+});
+
+ipcMain.handle("terminals:rename", async (_event, payload = {}) => {
+  const terminal = renameTerminal(payload.id, payload.name);
+  return {
+    terminal,
+    ...readTerminalsPayload(terminal.id, terminal.folderId)
+  };
+});
+
+ipcMain.handle("terminals:delete", async (_event, payload = {}) => {
+  const deleted = deleteTerminal(payload.id);
+  return {
+    terminal: deleted,
+    ...readTerminalsPayload(undefined, deleted?.folderId)
+  };
+});
+
+ipcMain.handle("terminals:delete-folder", async (_event, payload = {}) => {
+  const deleted = deleteTerminalFolder(payload.id);
+  return {
+    folder: deleted,
+    ...readTerminalsPayload()
+  };
+});
+
+ipcMain.handle("terminals:resize", async (_event, payload = {}) => {
+  const terminal = resizeTerminal(payload.id, {
+    cols: payload.cols,
+    rows: payload.rows
+  });
+  return {
+    terminal,
+    ...readTerminalsPayload(terminal.id, terminal.folderId)
+  };
+});
+
+ipcMain.handle("files:list-directory", async (_event, payload = {}) => {
+  return readFileTreeDirectory(payload.path);
+});
+
 app.whenReady().then(() => {
   createWindow();
   createTray();
@@ -778,6 +1709,9 @@ app.whenReady().then(() => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  for (const session of terminalSessions.values()) {
+    destroyTerminalSession(session);
+  }
 });
 
 app.on("window-all-closed", () => {
